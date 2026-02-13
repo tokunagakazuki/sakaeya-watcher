@@ -62,24 +62,37 @@ async function main() {
   await page.goto(URL, { waitUntil: "domcontentloaded" });
 
   // ページ側の描画待ち（必要なら増やす）
-  await page.waitForTimeout(5000);
+  await page.waitForTimeout(6000);
 
   const result = await page.evaluate(({ ymd }) => {
-    // クラスに日付文字列を含む <p> をゆるく検索
-    const p = Array.from(document.querySelectorAll("p")).find((el) =>
-      el.className.split(/\s+/).includes(ymd)
-    );
+    // DOM 変更に備えて複数パターンで日付セルを探す
+    const finders = [
+      () => Array.from(document.querySelectorAll("p")).find((el) => el.className.split(/\s+/).includes(ymd)),
+      () => document.querySelector(`[data-date="${ymd}"]`),
+      () => document.querySelector(`[data-day="${ymd}"]`),
+    ];
 
-    const iconClass = p?.querySelector("i")?.className ?? null;
-    const hasX = iconClass ? iconClass.includes("fa-xmark") : false;
+    const node = finders.map((fn) => fn()).find(Boolean);
+    const container = node?.closest("p, td, li, div") ?? node ?? null;
 
-    // ルール: × があれば満室、それ以外（要素が見つからない場合も含む）は空きあり扱い
+    const iconClass = container?.querySelector("i")?.className ?? null;
+    const hasX = iconClass ? iconClass.includes("fa-xmark") : /×/.test(container?.textContent ?? "");
+
+    if (!container) {
+      return {
+        ok: false,
+        status: "not-found",
+        reason: "date element not found",
+        debug: { pFound: false },
+      };
+    }
+
     if (hasX) {
       return {
         ok: true,
         status: "full",
         iconClass,
-        debug: { pFound: Boolean(p) },
+        debug: { pFound: true },
       };
     }
 
@@ -87,21 +100,15 @@ async function main() {
       ok: true,
       status: "available",
       iconClass,
-      debug: { pFound: Boolean(p) },
+      debug: { pFound: true },
     };
   }, { ymd: TARGET_YMD });
 
   console.log("result:", result);
 
-  if (!result.ok) {
+  if (!result.ok || result.status === "not-found") {
+    // 判定に失敗した場合は通知しない（ログのみにとどめる）
     console.log("判定失敗:", result.reason);
-    const msg =
-      `【さかえや】${TARGET_DATE_PARAM} 判定失敗\n` +
-      `runAt: ${runAt}\n` +
-      `reason: ${result.reason ?? "unknown"}\n` +
-      `確認URL:\n${URL}\n` +
-      (result.pClasses ? `pClasses(sample): ${result.pClasses.slice(0, 10).join(", ")}` : "");
-    await sendSms(msg);
     await browser.close();
     return;
   }
@@ -126,12 +133,6 @@ async function main() {
     // await sendSms(msg); // 満席時のSMS送信は停止中（必要ならコメントを外す）
   } else {
     console.log("空き状況不明:", result.status);
-    const msg =
-      `【さかえや】${TARGET_DATE_PARAM} 判定不明\n` +
-      `runAt: ${runAt}\n` +
-      `status: ${result.status}\n` +
-      `確認URL:\n${URL}`;
-    await sendSms(msg);
   }
 
   await browser.close();
